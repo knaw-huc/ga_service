@@ -11,6 +11,8 @@ services:
     container_name: ga_procrustus_es
     environment:
       - discovery.type=single-node
+    ports:
+      - 9200:9200
     networks:
       - procrustus_network
     volumes:
@@ -24,6 +26,10 @@ services:
     container_name: pyservice
     environment:
       - VIRTUAL_HOST=gaservice.sd.di.huc.knaw.nl
+    expose:
+      - 5000
+    ports:
+      - 5000:5000
     networks:
       - procrustus_network
     volumes:
