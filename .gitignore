@@ -112,3 +112,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Mac shit
+.idea/
+.DS_Store
