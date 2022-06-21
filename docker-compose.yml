@@ -7,7 +7,7 @@ networks:
 
 services:
   procrustes_elastic:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.5.2
+    image: registry.diginfra.net/elasticsearch:7.5.2-patched
     container_name: ga_procrustus_es
     environment:
       - discovery.type=single-node
@@ -17,7 +17,7 @@ services:
     networks:
       - procrustus_network
     volumes:
-      - /data/docker/volumes/ga_es/_data:/usr/share/elasticsearch/data
+      - ga_es:/usr/share/elasticsearch/data
       - /home/robz/:/home
 
   pyservice:

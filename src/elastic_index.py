@@ -6,8 +6,8 @@ import math
 class Index:
     def __init__(self, config):
         self.config = config
-        #self.es = Elasticsearch([{"host": self.config["url"], "port": self.config["port"]}])
-        self.client = Elasticsearch([{"host": self.config["url"]}])
+        self.es = Elasticsearch([{"host": self.config["url"], "port": self.config["port"]}])
+        self.client = Elasticsearch()
 
     def no_case(self, str_in):
         str = str_in.strip()
@@ -108,6 +108,7 @@ class Index:
                         matches.append({"multi_match": {"query": value, "fields": ["*"]}})
                     else:
                         matches.append({"match": {item["field"] + ".keyword": value}})
+
             response = self.client.search(
                 index=index,
                 body={ "query": {

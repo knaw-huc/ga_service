@@ -1,5 +1,7 @@
 import requests
 import json
+import sys
+import base64
 
 from queries import timbuctoo_queries, timbuctoo_fragments
 
@@ -8,6 +10,9 @@ class Timbuctoo_handler:
         self.server = "https://repository.goldenagents.org/v5/graphql"
         self.tq = timbuctoo_queries.Timbuctoo_queries()
         self.tf = timbuctoo_fragments.Timbuctoo_fragments()
+        self.normalized_props = {}
+        self.unique_props = {'title': {'shortendedUri': 'title'}}
+
 
 
     def fetch_data(self, query):
@@ -22,6 +27,10 @@ class Timbuctoo_handler:
 
     def get_props(self, dataset, collection):
         query = self.tq.get_collection_properties(dataset, collection)
+        return self.fetch_data(query)
+
+    def get_prefixes(self, dataset):
+        query = self.tq.get_dataset_prefixes(dataset)
         return self.fetch_data(query)
 
 
@@ -57,62 +66,218 @@ class Timbuctoo_handler:
 
     def build_query(self, dataset, collection, uri):
         props = self.get_props(dataset, collection)
+        self.normalize_props(props)
         values = self.value_extractor(props)
         query = self.tf.get_item(dataset, collection, uri, values)
         return query
+
+    def normalize_props(self, props):
+        for item in props["data"]["dataSetMetadata"]["collection"]["properties"]["items"]:
+            self.normalized_props[item["name"]] = item
 
     def get_value(self, item):
         if "uri" in item.keys():
             return item["title"]["value"]
         else:
-            return item["value"]
+            try:
+                return item["value"]
+            except:
+                return ""
 
     def humanify_notion(self, field):
-        ret_value = field.replace("_inverse_", "")
-        ret_value = ret_value.replace("List", "")
-        ret_value = ret_value.replace("schema_", "")
-        return ret_value
+        retValue = ""
+        #ret_value = field.replace("_inverse_", "")
+        #ret_value = ret_value.replace("List", "")
+        #ret_value = ret_value.replace("schema_", "")
+        if field != 'title':
+            if self.normalized_props[field]["shortenedUri"]:
+                label = self.normalized_props[field]["shortenedUri"]
+            else:
+                label = field
+
+
+            if ":" in label and "http" not in label:
+                labelTruncs = label.split(':')
+                retValue = labelTruncs[-1]
+            else:
+                if "#" in label:
+                    labelTruncs = label.split("#")
+                    retValue = labelTruncs[-1]
+                else:
+                    retValue = label
+        else:
+            retValue = field
+        return retValue
 
     def put_list_values(self, field, data):
         values = []
         for item in data["items"]:
-            values.append(self.get_value(item))
-        return {"notion": field, "label": self.humanify_notion(field), "values": values}
+            if "__typename" in item.keys():
+                linked_collection = self.get_link(field, item["__typename"])
+                if linked_collection != "":
+                    params = {
+                        "dataset": self.dataset,
+                        "collection": linked_collection,
+                        "uri": item["uri"]
+                    }
+                    values.append({"value": self.get_value(item), "link": params})
+                else:
+                    val = self.get_value(item)
+                    if val.startswith("http"):
+                        params = {
+                            "dataset": "extern",
+                            "collection": "",
+                            "uri": val
+                        }
+                        values.append({"value": self.get_value(item), "link": params})
+                    else:
+                        values.append({"value": self.get_value(item)})
+            else:
+                values.append({"value": self.get_value(item)})
+        return {"notion": field.replace("List", ""), "label": self.humanify_notion(field), "values": values, "type": "human"}
 
 
-    def unify_data(self, field, data):
+    def get_link(self, field, type_name):
+        for col in self.normalized_props[field]["referencedCollections"]["items"]:
+           if col != "tim_unknown":
+               if col in type_name:
+                   return col
+        return ""
+
+    def unify_data(self, field, data, pref_list, human = True):
         if data == None:
-            return {"notion": field, "label": self.humanify_notion(field), "values": []}
+            return {"notion": field, "label": self.humanify_notion(field), "values": [], "type": "human"}
         else:
             if "items" in data.keys():
-                return self.put_list_values(field, data)
+                return self.extract_list(field, data)
             else:
                 values = []
-                values.append(self.get_value(data))
-                return {"notion": field, "label": self.humanify_notion(field), "values": values}
+                if field == "rdf_type" and human:
+                    rtype = self.humanize_rdf_type(self.get_value(data))
+                    values.append({"value": rtype})
+                else:
+                    linked_collection = self.get_value_link(field, data)
+                    if linked_collection != "":
+                        params = {
+                            "dataset": self.dataset,
+                            "collection": linked_collection,
+                            "uri": data["uri"]
+                        }
+                        values.append({"value": self.get_value(data), "link": params})
+                    else:
+                        values.append({"value": self.get_value(data)})
+                return {"notion": field, "label": self.humanify_notion(field), "values": values, "type": "human"}
 
 
-    def model_results(self, dataset, collection, result):
+    def get_value_link(self, field, data):
+        retVal = ""
+        if field != 'title' and field != 'uri':
+            if "__typename" in data.keys():
+                retVal = self.get_link(field, data["__typename"])
+        return retVal
+
+    def humanize_rdf_type(self, value):
+        type = value.split("/");
+        if type[-1]:
+            return type[-1]
+        else:
+            return ""
+
+    def extract_list(self, field, data):
+        if field == "rdf_typeList":
+            return self.put_rdf_type_list(field, data)
+        else:
+            return self.put_list_values(field, data)
+
+    def put_rdf_type_list(self, field, data):
+        values = []
+        for item in data["items"]:
+            if "uri" in item.keys():
+                rdf_type = item["uri"].split("/")
+                obj = {"value": rdf_type[-1]}
+                if obj not in values:
+                    values.append({"value": rdf_type[-1]})
+        return {"notion": field.replace("List", ""), "label": self.humanify_notion(field), "values": values, "type": "human"}
+
+    def model_results(self, dataset, collection, result, list):
         items = []
         for field in result["data"]["dataSets"][dataset][collection]:
-            items.append(self.unify_data(field, result["data"]["dataSets"][dataset][collection][field]))
+            items.append(self.unify_data(field, result["data"]["dataSets"][dataset][collection][field], list))
         return items
 
+    def undouble_items(self, list):
+        labels = []
+        retList = []
+        for item in list:
+            if item["label"] not in labels:
+                labels.append(item["label"])
+            else:
+                item["type"] = "rdf"
+            retList.append(item)
+        return retList
+
     def rdf_label_as_title(self, title, items):
-        ret_title = title
+
+        if type(title) == str:
+            ret_title = title
+        else:
+            ret_title = title["value"]
+
         for item in items:
             if item["notion"] == "rdfs_label":
-                ret_title = item["values"][0]
+                ret_title = item["values"][0]["value"]
         return ret_title
 
+    def create_adressed_prefixes(self, dataset):
+        prefixes = self.get_prefixes(dataset)
+        prefixList = {}
+        for item in prefixes["data"]["dataSetMetadata"]["prefixMappings"]:
+            prefixList[item["uri"]] = item["prefix"]
+        return prefixList
+
+    def strip_prefixes(self, dataset, list):
+        prefixes = self.get_prefixes(dataset)
+        for item in list:
+            if item["values"]:
+                for i in range(len(item["values"])):
+                    value = self.check_prefixes(item["values"][i]["value"], prefixes)
+                    if value != item["values"][i]["value"]:
+                        item["values"][i]["value"] = value
+
+    def check_prefixes(self, val, prefixes):
+        retval = val
+        if "http://" in val or "https://" in val:
+            for prefix in prefixes["data"]["dataSetMetadata"]["prefixMappings"]:
+                if val.startswith(prefix["uri"]):
+                    retval = val.replace(prefix["uri"], "")
+        return retval
+
+
     def get_item(self, dataset, collection, uri):
+        self.dataset = dataset
+        self.collection = collection
         query = self.build_query(dataset, collection, uri)
+        list = self.create_adressed_prefixes(dataset)
         result = self.fetch_data(query)
-        items = self.model_results(dataset, collection, result)
+        items = self.model_results(dataset, collection, result, list)
         tmp = items.pop(0);
         title = tmp["values"][0]
         title = self.rdf_label_as_title(title, items)
         return {"title": title, "uri": uri, "items": items}
-        #return json.dumps({"query": query})
+
+    def get_human_item(self, dataset, collection, uri):
+        self.dataset = dataset
+        self.collection = collection
+        query = self.build_query(dataset, collection, uri)
+        list = self.create_adressed_prefixes(dataset)
+        result = self.fetch_data(query)
+        items = self.model_results(dataset, collection, result, list)
+        if collection != "schema_Role":
+            items = self.undouble_items(items)
+        self.strip_prefixes(dataset, items)
+        tmp = items.pop(0);
+        title = tmp["values"][0]
+        title = self.rdf_label_as_title(title, items)
+        return {"title": title, "uri": uri, "items": items}
 
 
