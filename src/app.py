@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 config = {
     "url" : "procrustes_elastic",
-    "port" : "9266",
+    "port" : "9200",
     "doc_type" : "procrustes"
 }
 
